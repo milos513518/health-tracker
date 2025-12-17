@@ -18,14 +18,38 @@ st.set_page_config(
 def get_google_sheet():
     """Connect to Google Sheets using service account credentials"""
     try:
-        # Get credentials from Streamlit secrets
-        credentials = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=[
-                "https://www.googleapis.com/auth/spreadsheets",
-                "https://www.googleapis.com/auth/drive"
-            ]
-        )
+        # Try to get credentials from Streamlit secrets first (for Streamlit Cloud)
+        if "gcp_service_account" in st.secrets:
+            credentials = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"
+                ]
+            )
+        else:
+            # Fall back to environment variables (for Render)
+            import os
+            credentials_dict = {
+                "type": os.environ.get("GCP_TYPE", "service_account"),
+                "project_id": os.environ.get("GCP_PROJECT_ID"),
+                "private_key_id": os.environ.get("GCP_PRIVATE_KEY_ID"),
+                "private_key": os.environ.get("GCP_PRIVATE_KEY"),
+                "client_email": os.environ.get("GCP_CLIENT_EMAIL"),
+                "client_id": os.environ.get("GCP_CLIENT_ID"),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+                "client_x509_cert_url": f"https://www.googleapis.com/robot/v1/metadata/x509/{os.environ.get('GCP_CLIENT_EMAIL')}",
+                "universe_domain": "googleapis.com"
+            }
+            credentials = Credentials.from_service_account_info(
+                credentials_dict,
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"
+                ]
+            )
         
         # Connect to Google Sheets
         client = gspread.authorize(credentials)
