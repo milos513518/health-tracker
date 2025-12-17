@@ -18,18 +18,10 @@ st.set_page_config(
 def get_google_sheet():
     """Connect to Google Sheets using service account credentials"""
     try:
-        # Try to get credentials from Streamlit secrets first (for Streamlit Cloud)
-        if "gcp_service_account" in st.secrets:
-            credentials = Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"],
-                scopes=[
-                    "https://www.googleapis.com/auth/spreadsheets",
-                    "https://www.googleapis.com/auth/drive"
-                ]
-            )
-        else:
-            # Fall back to environment variables (for Render)
-            import os
+        import os
+        
+        # Try to get credentials from environment variables first (for Render)
+        if os.environ.get("GCP_CLIENT_EMAIL"):
             credentials_dict = {
                 "type": os.environ.get("GCP_TYPE", "service_account"),
                 "project_id": os.environ.get("GCP_PROJECT_ID"),
@@ -50,6 +42,18 @@ def get_google_sheet():
                     "https://www.googleapis.com/auth/drive"
                 ]
             )
+        # Fall back to Streamlit secrets (for Streamlit Cloud)
+        elif "gcp_service_account" in st.secrets:
+            credentials = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"
+                ]
+            )
+        else:
+            st.error("No credentials found. Please set up environment variables or Streamlit secrets.")
+            return None
         
         # Connect to Google Sheets
         client = gspread.authorize(credentials)
