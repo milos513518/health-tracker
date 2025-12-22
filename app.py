@@ -42,7 +42,7 @@ def get_google_sheet():
                 ]
             )
         else:
-            st.error(f"Credentials file not found. Please ensure your Secret File is named 'gcp-key.pem' in Render.")
+            st.error(f"Credentials file not found at {secret_file_path}")
             return None
 
         # Connect to Google Sheets
