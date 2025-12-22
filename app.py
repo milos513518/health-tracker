@@ -19,9 +19,21 @@ def get_google_sheet():
     """Connect to Google Sheets using service account credentials"""
     try:
         import os
+        import json
         
         # Try to get credentials from environment variables first (for Render)
-        if os.environ.get("GCP_CLIENT_EMAIL"):
+        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
+            # Parse the JSON string from environment variable
+            credentials_dict = json.loads(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
+            credentials = Credentials.from_service_account_info(
+                credentials_dict,
+                scopes=[
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive"
+                ]
+            )
+        # Try individual environment variables (alternative method)
+        elif os.environ.get("GCP_CLIENT_EMAIL"):
             credentials_dict = {
                 "type": os.environ.get("GCP_TYPE", "service_account"),
                 "project_id": os.environ.get("GCP_PROJECT_ID"),
@@ -381,7 +393,7 @@ with tab4:
     4. ✓ Created Google Cloud service account
     5. ✓ Downloaded JSON credentials
     6. ✓ Shared sheet with: `health-tracker-bot@health-tracker-481311.iam.gserviceaccount.com`
-    7. ✓ Added secrets to Streamlit Cloud
+    7. ✓ Added secrets to Streamlit Cloud (or environment variable to Render)
     8. ✓ Rebooted app
     
     ---
@@ -390,7 +402,7 @@ with tab4:
     
     **"Error connecting to Google Sheets"**
     - Check that you shared the sheet with the service account email (see step 6 above)
-    - Verify the secrets in Streamlit Settings → Secrets
+    - Verify the secrets in Streamlit Settings → Secrets (or environment variables in Render)
     - Make sure the sheet name is exactly "Health Data"
     - Make sure the worksheet name is exactly "daily_manual_entry"
     
