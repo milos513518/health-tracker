@@ -8,6 +8,8 @@ from google.oauth2.service_account import Credentials
 import os
 import json
 
+from streamlit_autorefresh import st_autorefresh
+
 # -----------------------
 # CONFIG (yours)
 # -----------------------
@@ -22,7 +24,13 @@ SCOPES = [
 
 EXPECTED_COLUMNS = ["date", "ahi", "leak", "coherence", "energy", "notes"]
 
+# ✅ True auto refresh interval
+AUTO_REFRESH_SECONDS = 10  # change to 5, 15, 30, etc.
+
 st.set_page_config(page_title="Health Tracker", page_icon="💪", layout="wide")
+
+# ✅ This forces Streamlit to rerun automatically every N seconds
+st_autorefresh(interval=AUTO_REFRESH_SECONDS * 1000, key="app_autorefresh")
 
 
 # -----------------------
@@ -30,15 +38,7 @@ st.set_page_config(page_title="Health Tracker", page_icon="💪", layout="wide")
 # -----------------------
 @st.cache_resource
 def get_worksheet():
-    """
-    Connect to Google Sheets using service-account JSON stored in Render Secret File.
-    Robust steps:
-      1) Read file as raw text
-      2) json.loads
-      3) Convert literal "\\n" in private_key into real newlines
-      4) Credentials.from_service_account_info
-      5) gspread authorize + open worksheet
-    """
+    """Connect to Google Sheets using service-account JSON stored in Render Secret File."""
     if os.path.exists(SECRET_FILE_PATH):
         with open(SECRET_FILE_PATH, "r") as f:
             raw = f.read().strip()
@@ -47,6 +47,7 @@ def get_worksheet():
 
         pk = creds.get("private_key", "")
         if isinstance(pk, str):
+            # Convert literal "\n" to real newlines (works whether needed or not)
             creds["private_key"] = pk.replace("\\n", "\n")
 
         credentials = Credentials.from_service_account_info(creds, scopes=SCOPES)
@@ -62,22 +63,14 @@ def get_worksheet():
 
     client = gspread.authorize(credentials)
     sheet = client.open_by_key(SHEET_KEY)
-    ws = sheet.worksheet(WORKSHEET_NAME)
-    return ws
+    return sheet.worksheet(WORKSHEET_NAME)
 
 
 # -----------------------
-# HELPERS
+# HEADER NORMALIZATION
 # -----------------------
 def _clean_header(h: str) -> str:
-    """
-    Normalize a header cell to avoid KeyError('date'):
-    - remove BOM/invisible char \ufeff
-    - strip whitespace
-    - lower-case
-    """
-    if h is None:
-        return ""
+    # remove BOM/invisible char, strip whitespace, lowercase
     return str(h).replace("\ufeff", "").strip().lower()
 
 
@@ -86,7 +79,6 @@ def _normalize_headers(headers):
 
 
 def _ensure_expected_cols(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure all expected columns exist (create missing optional columns)."""
     for col in EXPECTED_COLUMNS:
         if col not in df.columns:
             df[col] = None
@@ -97,37 +89,29 @@ def _ensure_expected_cols(df: pd.DataFrame) -> pd.DataFrame:
 # DATA FUNCTIONS
 # -----------------------
 def load_data_live() -> pd.DataFrame:
-    """
-    Load data from sheet with header normalization.
-    If headers are missing/misnamed, raises a clear error showing what it found.
-    """
     ws = get_worksheet()
     data = ws.get_all_values()
 
-    # Empty sheet
     if not data:
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     raw_headers = data[0]
     headers = _normalize_headers(raw_headers)
 
-    # If only header row exists
     if len(data) == 1:
         df = pd.DataFrame(columns=headers)
         return _ensure_expected_cols(df)
 
     df = pd.DataFrame(data[1:], columns=headers)
 
-    # Allow a few common variations -> map to "date"
-    rename_map = {
+    # Accept common alternatives for date
+    df.rename(columns={
         "day": "date",
         "datetime": "date",
         "timestamp": "date",
         "recorded_at": "date",
-    }
-    df.rename(columns=rename_map, inplace=True)
+    }, inplace=True)
 
-    # Required column: date
     if "date" not in df.columns:
         raise KeyError(
             "Missing required column 'date'.\n"
@@ -136,36 +120,21 @@ def load_data_live() -> pd.DataFrame:
             f"Fix Row 1 to exactly: {', '.join(EXPECTED_COLUMNS)}"
         )
 
-    # Parse date
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-    # Parse numeric columns if present
     for col in ["ahi", "leak", "coherence", "energy"]:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # Ensure all expected columns exist
     df = _ensure_expected_cols(df)
-
-    # Sort newest first
     df = df.sort_values("date", ascending=False)
-
     return df
 
 
-def save_entry(date, ahi, leak, coherence, energy, notes) -> bool:
-    ws = get_worksheet()
-
-    row = [
-        date.strftime("%Y-%m-%d"),
-        str(ahi),
-        str(leak),
-        str(coherence),
-        str(energy),
-        notes,
-    ]
-    ws.append_row(row)
-    return True
+# ✅ Cache the sheet read for exactly the refresh interval
+@st.cache_data(ttl=AUTO_REFRESH_SECONDS)
+def load_data_cached() -> pd.DataFrame:
+    return load_data_live()
 
 
 def calculate_correlations(df: pd.DataFrame):
@@ -181,44 +150,42 @@ def calculate_correlations(df: pd.DataFrame):
 # UI
 # -----------------------
 st.title("💪 Personal Health Tracker")
-st.caption("Connects to Google Sheets only when you click a button (stable on Render).")
+st.caption(f"Auto-refreshing every {AUTO_REFRESH_SECONDS} seconds from Google Sheets.")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "✍️ Daily Entry", "🔍 Correlations", "⚙️ Setup"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard", "🔍 Correlations", "⚙️ Setup", "🧾 Raw Table"])
 
+# Keep last-good df in session state so UI doesn't go blank on intermittent failures
 if "df" not in st.session_state:
     st.session_state.df = pd.DataFrame()
 
-# ---- Setup tab
-with tab4:
-    st.subheader("🔌 Connection Status (On-demand)")
+# Pull fresh data automatically every refresh (cached at TTL)
+try:
+    st.session_state.df = load_data_cached()
+except Exception as e:
+    # Keep previous df if a refresh fails
+    st.warning(f"Auto-refresh failed (showing last loaded data): {repr(e)}")
 
-    if st.button("Test connection to Google Sheets", use_container_width=True):
-        try:
-            ws = get_worksheet()
-            st.success(f"✅ Connected! Worksheet: {ws.title}")
-        except Exception as e:
-            st.error(f"❌ Connection failed: {repr(e)}")
+df = st.session_state.df
+
+
+with tab4:
+    st.subheader("🔌 Connection Status")
+    try:
+        ws = get_worksheet()
+        st.success(f"✅ Connected! Worksheet: {ws.title}")
+    except Exception as e:
+        st.error(f"❌ Connection failed: {repr(e)}")
 
     st.divider()
-    st.write("Secret file path check:")
-    st.write(f"- {SECRET_FILE_PATH} exists? **{os.path.exists(SECRET_FILE_PATH)}**")
+    st.write("Secret file exists:")
+    st.write(f"- {SECRET_FILE_PATH}: **{os.path.exists(SECRET_FILE_PATH)}**")
 
-# ---- Dashboard tab
+
 with tab1:
-    st.subheader("📊 Dashboard (On-demand load)")
-
-    if st.button("Load / Refresh data from Google Sheets", use_container_width=True):
-        try:
-            st.session_state.df = load_data_live()
-            st.success("Loaded!")
-        except Exception as e:
-            # Show the full message so you see headers if date is missing
-            st.error(str(e))
-
-    df = st.session_state.df
+    st.subheader("📊 Dashboard")
 
     if df is None or df.empty:
-        st.info("No data loaded yet. Click **Load / Refresh**.")
+        st.info("No data yet (or sheet empty). Add rows in Google Sheets and this will update automatically.")
     else:
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Avg AHI", f"{df['ahi'].mean():.1f}" if df["ahi"].notna().any() else "—")
@@ -241,47 +208,12 @@ with tab1:
                     use_container_width=True
                 )
 
-        st.subheader("Recent Entries")
-        display_df = df.copy()
-        display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
-        st.dataframe(display_df.head(25), hide_index=True, use_container_width=True)
 
-# ---- Daily Entry tab
 with tab2:
-    st.subheader("✍️ Log Today's Metrics")
-
-    with st.form("daily_entry_form"):
-        col1, col2 = st.columns(2)
-
-        with col1:
-            entry_date = st.date_input("Date", value=datetime.now())
-            ahi = st.number_input("AHI", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-            leak = st.number_input("Leak Rate", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-
-        with col2:
-            coherence = st.number_input("Coherence", min_value=0.0, max_value=100.0, value=0.0, step=0.1)
-            energy = st.slider("Energy", 1, 10, 5)
-            notes = st.text_area("Notes", placeholder="Anything about sleep, diet, stress, training...")
-
-        submitted = st.form_submit_button("💾 Save Entry", use_container_width=True)
-
-        if submitted:
-            try:
-                save_entry(entry_date, ahi, leak, coherence, energy, notes)
-                st.success("✅ Saved!")
-                st.info("Go to Dashboard and click **Load / Refresh** to see it.")
-            except Exception as e:
-                st.error(f"Save failed: {repr(e)}")
-
-# ---- Correlations tab
-with tab3:
     st.subheader("🔍 Correlations")
-
-    df = st.session_state.df
     corr = calculate_correlations(df)
-
     if corr is None:
-        st.info("Load data first (Dashboard tab). Need at least ~7 rows for correlations.")
+        st.info("Need at least ~7 rows loaded to compute correlations.")
     else:
         fig = go.Figure(
             data=go.Heatmap(
@@ -293,5 +225,12 @@ with tab3:
         )
         st.plotly_chart(fig, use_container_width=True)
 
-st.divider()
-st.caption("Built with ❤️")
+
+with tab3:
+    st.subheader("🧾 Raw Table (auto-updating)")
+    if df is None or df.empty:
+        st.info("No rows yet.")
+    else:
+        display_df = df.copy()
+        display_df["date"] = display_df["date"].dt.strftime("%Y-%m-%d")
+        st.dataframe(display_df, hide_index=True, use_container_width=True)
