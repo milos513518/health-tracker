@@ -22,24 +22,8 @@ def get_google_sheet():
     try:
         credentials = None
         
-        # Method 1: Try GOOGLE_APPLICATION_CREDENTIALS_JSON first (for Render)
-        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
-        if creds_json:
-            try:
-                credentials_dict = json.loads(creds_json)
-                credentials = Credentials.from_service_account_info(
-                    credentials_dict,
-                    scopes=[
-                        "https://www.googleapis.com/auth/spreadsheets",
-                        "https://www.googleapis.com/auth/drive"
-                    ]
-                )
-            except Exception as e:
-                st.error(f"Error parsing GOOGLE_APPLICATION_CREDENTIALS_JSON: {str(e)}")
-                return None
-        
-        # Method 2: Try individual environment variables
-        elif os.environ.get("GCP_CLIENT_EMAIL"):
+        # Method 1: Try individual GCP environment variables FIRST (what you have set up)
+        if os.environ.get("GCP_CLIENT_EMAIL"):
             credentials_dict = {
                 "type": os.environ.get("GCP_TYPE", "service_account"),
                 "project_id": os.environ.get("GCP_PROJECT_ID"),
