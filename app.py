@@ -39,104 +39,118 @@ def get_worksheet():
       4) Credentials.from_service_account_info
       5) gspread authorize + open worksheet
     """
-    try:
-        if os.path.exists(SECRET_FILE_PATH):
-            with open(SECRET_FILE_PATH, "r") as f:
-                raw = f.read().strip()
+    if os.path.exists(SECRET_FILE_PATH):
+        with open(SECRET_FILE_PATH, "r") as f:
+            raw = f.read().strip()
 
-            creds = json.loads(raw)
+        creds = json.loads(raw)
 
-            pk = creds.get("private_key", "")
-            if isinstance(pk, str):
-                creds["private_key"] = pk.replace("\\n", "\n")
+        pk = creds.get("private_key", "")
+        if isinstance(pk, str):
+            creds["private_key"] = pk.replace("\\n", "\n")
 
-            credentials = Credentials.from_service_account_info(creds, scopes=SCOPES)
+        credentials = Credentials.from_service_account_info(creds, scopes=SCOPES)
 
-        elif os.path.exists("credentials.json"):
-            credentials = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
+    elif os.path.exists("credentials.json"):
+        credentials = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
 
-        else:
-            raise FileNotFoundError(
-                f"Credentials not found. Expected Render secret file at {SECRET_FILE_PATH} "
-                f"or local credentials.json."
-            )
+    else:
+        raise FileNotFoundError(
+            f"Credentials not found. Expected Render secret file at {SECRET_FILE_PATH} "
+            f"or local credentials.json."
+        )
 
-        client = gspread.authorize(credentials)
-        sheet = client.open_by_key(SHEET_KEY)
-        ws = sheet.worksheet(WORKSHEET_NAME)
-        return ws
+    client = gspread.authorize(credentials)
+    sheet = client.open_by_key(SHEET_KEY)
+    ws = sheet.worksheet(WORKSHEET_NAME)
+    return ws
 
-    except Exception as e:
-        import traceback
-        tb = traceback.format_exc()
-        print("=== GOOGLE SHEETS CONNECT ERROR ===", flush=True)
-        print(tb, flush=True)
-        raise
+
+# -----------------------
+# HELPERS
+# -----------------------
+def _clean_header(h: str) -> str:
+    """
+    Normalize a header cell to avoid KeyError('date'):
+    - remove BOM/invisible char \ufeff
+    - strip whitespace
+    - lower-case
+    """
+    if h is None:
+        return ""
+    return str(h).replace("\ufeff", "").strip().lower()
 
 
 def _normalize_headers(headers):
-    # strip whitespace and lower-case
-    return [h.strip().lower() for h in headers]
+    return [_clean_header(h) for h in headers]
 
 
+def _ensure_expected_cols(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure all expected columns exist (create missing optional columns)."""
+    for col in EXPECTED_COLUMNS:
+        if col not in df.columns:
+            df[col] = None
+    return df[EXPECTED_COLUMNS]
+
+
+# -----------------------
+# DATA FUNCTIONS
+# -----------------------
 def load_data_live() -> pd.DataFrame:
     """
-    Load data from sheet with header normalization to avoid KeyError('date').
-    If headers are missing, raises a clear error explaining what was found.
+    Load data from sheet with header normalization.
+    If headers are missing/misnamed, raises a clear error showing what it found.
     """
     ws = get_worksheet()
     data = ws.get_all_values()
 
-    # empty sheet
+    # Empty sheet
     if not data:
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     raw_headers = data[0]
     headers = _normalize_headers(raw_headers)
 
-    # If sheet has only headers row
+    # If only header row exists
     if len(data) == 1:
-        # return empty df with normalized headers, but ensure expected cols exist
         df = pd.DataFrame(columns=headers)
-        for col in EXPECTED_COLUMNS:
-            if col not in df.columns:
-                df[col] = pd.Series(dtype="object")
-        return df[EXPECTED_COLUMNS]
+        return _ensure_expected_cols(df)
 
     df = pd.DataFrame(data[1:], columns=headers)
 
-    # Allow a few common variations
+    # Allow a few common variations -> map to "date"
     rename_map = {
         "day": "date",
         "datetime": "date",
         "timestamp": "date",
+        "recorded_at": "date",
     }
     df.rename(columns=rename_map, inplace=True)
 
-    # Ensure required columns exist (create if missing, except date which we require)
+    # Required column: date
     if "date" not in df.columns:
         raise KeyError(
-            f"Missing required column 'date'. Found headers: {headers}. "
-            f"Fix row 1 to exactly: {', '.join(EXPECTED_COLUMNS)}"
+            "Missing required column 'date'.\n"
+            f"Found headers (normalized): {headers}\n"
+            f"Raw headers (row 1): {raw_headers}\n"
+            f"Fix Row 1 to exactly: {', '.join(EXPECTED_COLUMNS)}"
         )
-
-    # Create optional columns if missing
-    for col in EXPECTED_COLUMNS:
-        if col not in df.columns:
-            df[col] = None
 
     # Parse date
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
-    # Parse numeric columns
+    # Parse numeric columns if present
     for col in ["ahi", "leak", "coherence", "energy"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    # Ensure all expected columns exist
+    df = _ensure_expected_cols(df)
 
     # Sort newest first
     df = df.sort_values("date", ascending=False)
 
-    # Keep expected column order
-    return df[EXPECTED_COLUMNS]
+    return df
 
 
 def save_entry(date, ahi, leak, coherence, energy, notes) -> bool:
@@ -198,14 +212,14 @@ with tab1:
             st.session_state.df = load_data_live()
             st.success("Loaded!")
         except Exception as e:
-            st.error(f"Load failed: {repr(e)}")
+            # Show the full message so you see headers if date is missing
+            st.error(str(e))
 
     df = st.session_state.df
 
     if df is None or df.empty:
         st.info("No data loaded yet. Click **Load / Refresh**.")
     else:
-        # Metrics
         col1, col2, col3, col4 = st.columns(4)
         col1.metric("Avg AHI", f"{df['ahi'].mean():.1f}" if df["ahi"].notna().any() else "—")
         col2.metric("Avg Leak", f"{df['leak'].mean():.1f}" if df["leak"].notna().any() else "—")
@@ -217,11 +231,15 @@ with tab1:
         df_sorted = df.sort_values("date")
         if df_sorted["date"].notna().any():
             if df_sorted["ahi"].notna().any():
-                st.plotly_chart(px.line(df_sorted, x="date", y="ahi", title="AHI Trend", markers=True),
-                                use_container_width=True)
+                st.plotly_chart(
+                    px.line(df_sorted, x="date", y="ahi", title="AHI Trend", markers=True),
+                    use_container_width=True
+                )
             if df_sorted["energy"].notna().any():
-                st.plotly_chart(px.line(df_sorted, x="date", y="energy", title="Energy Trend", markers=True),
-                                use_container_width=True)
+                st.plotly_chart(
+                    px.line(df_sorted, x="date", y="energy", title="Energy Trend", markers=True),
+                    use_container_width=True
+                )
 
         st.subheader("Recent Entries")
         display_df = df.copy()
