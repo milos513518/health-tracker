@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 import os
@@ -18,21 +18,29 @@ st.set_page_config(
 # Google Sheets connection
 @st.cache_resource
 def get_google_sheet():
-    """Connect to Google Sheets using service account credentials file"""
+    """Connect to Google Sheets and automatically fix key formatting"""
     try:
-        # The path where Render stores your secret file
         secret_file_path = "/etc/secrets/gcp-key.pem"
         
         # Check if the file exists on Render
         if os.path.exists(secret_file_path):
-            credentials = Credentials.from_service_account_file(
-                secret_file_path,
+            with open(secret_file_path, 'r') as f:
+                creds_data = json.load(f)
+            
+            # THE AUTOMATIC FIX:
+            # This line finds those "\n" text characters and turns them into 
+            # the real hidden line breaks Google needs.
+            if "private_key" in creds_data:
+                creds_data["private_key"] = creds_data["private_key"].replace("\\n", "\n")
+            
+            credentials = Credentials.from_service_account_info(
+                creds_data,
                 scopes=[
                     "https://www.googleapis.com/auth/spreadsheets",
                     "https://www.googleapis.com/auth/drive"
                 ]
             )
-        # Fallback for local testing (looking for a local credentials.json file)
+        # Fallback for local testing
         elif os.path.exists("credentials.json"):
             credentials = Credentials.from_service_account_file(
                 "credentials.json",
@@ -42,13 +50,13 @@ def get_google_sheet():
                 ]
             )
         else:
-            st.error(f"Credentials file not found at {secret_file_path}")
+            st.error("Credentials file not found in Render Secret Files.")
             return None
 
         # Connect to Google Sheets
         client = gspread.authorize(credentials)
         
-        # Open the specific sheet by its ID
+        # Open your specific sheet
         sheet = client.open_by_key("1qc_8gnDFMkwnT3j2i_BFBWFqsLymroqVf-rrQuGzzOc")
         worksheet = sheet.worksheet("daily_manual_entry")
         
