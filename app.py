@@ -5,6 +5,8 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
+import os
+import json
 
 # Page config
 st.set_page_config(
@@ -18,24 +20,13 @@ st.set_page_config(
 def get_google_sheet():
     """Connect to Google Sheets using service account credentials"""
     try:
-        import os
-        import json
+        credentials = None
         
-        # Debug: Show which environment variables are present
-        st.sidebar.write("🔍 Debug Info:")
-        st.sidebar.write(f"GOOGLE_APPLICATION_CREDENTIALS_JSON present: {bool(os.environ.get('GOOGLE_APPLICATION_CREDENTIALS_JSON'))}")
-        st.sidebar.write(f"GCP_CLIENT_EMAIL present: {bool(os.environ.get('GCP_CLIENT_EMAIL'))}")
-        st.sidebar.write(f"Streamlit secrets present: {'gcp_service_account' in st.secrets}")
-        
-        # Try to get credentials from environment variables first (for Render)
-        if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON"):
-            st.sidebar.success("✓ Found GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        # Method 1: Try GOOGLE_APPLICATION_CREDENTIALS_JSON first (for Render)
+        creds_json = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON")
+        if creds_json:
             try:
-                # Parse the JSON string from environment variable
-                credentials_dict = json.loads(os.environ.get("GOOGLE_APPLICATION_CREDENTIALS_JSON"))
-                st.sidebar.write(f"Project ID: {credentials_dict.get('project_id', 'N/A')}")
-                st.sidebar.write(f"Client Email: {credentials_dict.get('client_email', 'N/A')[:50]}...")
-                
+                credentials_dict = json.loads(creds_json)
                 credentials = Credentials.from_service_account_info(
                     credentials_dict,
                     scopes=[
@@ -43,17 +34,12 @@ def get_google_sheet():
                         "https://www.googleapis.com/auth/drive"
                     ]
                 )
-                st.sidebar.success("✓ Credentials parsed successfully")
-            except json.JSONDecodeError as e:
-                st.sidebar.error(f"❌ JSON parsing error: {str(e)}")
-                raise
             except Exception as e:
-                st.sidebar.error(f"❌ Credentials creation error: {str(e)}")
-                raise
-                
-        # Try individual environment variables (alternative method)
+                st.error(f"Error parsing GOOGLE_APPLICATION_CREDENTIALS_JSON: {str(e)}")
+                return None
+        
+        # Method 2: Try individual environment variables
         elif os.environ.get("GCP_CLIENT_EMAIL"):
-            st.sidebar.success("✓ Found individual GCP variables")
             credentials_dict = {
                 "type": os.environ.get("GCP_TYPE", "service_account"),
                 "project_id": os.environ.get("GCP_PROJECT_ID"),
@@ -74,9 +60,9 @@ def get_google_sheet():
                     "https://www.googleapis.com/auth/drive"
                 ]
             )
-        # Fall back to Streamlit secrets (for Streamlit Cloud)
-        elif "gcp_service_account" in st.secrets:
-            st.sidebar.success("✓ Found Streamlit secrets")
+        
+        # Method 3: Fall back to Streamlit secrets (for Streamlit Cloud)
+        elif hasattr(st, 'secrets') and "gcp_service_account" in st.secrets:
             credentials = Credentials.from_service_account_info(
                 st.secrets["gcp_service_account"],
                 scopes=[
@@ -84,37 +70,23 @@ def get_google_sheet():
                     "https://www.googleapis.com/auth/drive"
                 ]
             )
-        else:
-            st.sidebar.error("❌ No credentials found anywhere")
-            st.error("No credentials found. Please set up environment variables or Streamlit secrets.")
+        
+        if not credentials:
+            st.error("No credentials found. Please set GOOGLE_APPLICATION_CREDENTIALS_JSON environment variable.")
             return None
         
         # Connect to Google Sheets
-        st.sidebar.write("Attempting to authorize with gspread...")
         client = gspread.authorize(credentials)
-        st.sidebar.success("✓ Authorized with gspread")
         
         # Open the specific sheet
-        st.sidebar.write("Opening spreadsheet...")
         sheet = client.open_by_key("1qc_8gnDFMkwnT3j2i_BFBWFqsLymroqVf-rrQuGzzOc")
-        st.sidebar.success("✓ Spreadsheet opened")
-        
-        st.sidebar.write("Getting worksheet...")
         worksheet = sheet.worksheet("daily_manual_entry")
-        st.sidebar.success("✓ Worksheet retrieved")
         
         return worksheet
+        
     except Exception as e:
-        error_msg = str(e)
-        st.error(f"Error connecting to Google Sheets: {error_msg}")
-        st.sidebar.error(f"❌ Full error: {error_msg}")
-        
-        # Additional troubleshooting info
-        import traceback
-        st.sidebar.text("Full traceback:")
-        st.sidebar.code(traceback.format_exc())
-        
-        st.info("Make sure you've added the secrets in Streamlit Cloud and shared the sheet with the service account email.")
+        st.error(f"Error connecting to Google Sheets: {str(e)}")
+        st.info("Make sure you've shared the sheet with the service account email.")
         return None
 
 @st.cache_data(ttl=60)
@@ -429,27 +401,23 @@ with tab4:
     3. ✓ Added headers: `date | ahi | leak | coherence | energy | notes`
     4. ✓ Created Google Cloud service account
     5. ✓ Downloaded JSON credentials
-    6. ✓ Shared sheet with: `health-tracker-bot@health-tracker-481311.iam.gserviceaccount.com`
-    7. ✓ Added secrets to Streamlit Cloud (or environment variable to Render)
-    8. ✓ Rebooted app
+    6. ✓ Shared sheet with service account email (Editor access)
+    7. ✓ Added GOOGLE_APPLICATION_CREDENTIALS_JSON to Render environment variables
+    8. ✓ Redeployed app
     
     ---
     
     ### 🔧 Troubleshooting
     
     **"Error connecting to Google Sheets"**
-    - Check that you shared the sheet with the service account email (see step 6 above)
-    - Verify the secrets in Streamlit Settings → Secrets (or environment variables in Render)
+    - Check that you shared the sheet with the service account email
+    - Verify the GOOGLE_APPLICATION_CREDENTIALS_JSON in Render environment variables
     - Make sure the sheet name is exactly "Health Data"
     - Make sure the worksheet name is exactly "daily_manual_entry"
     
     **"Error loading data"**
     - Check that your sheet has the correct headers in row 1
     - Verify there's no extra worksheets with similar names
-    
-    **Private key formatting issues**
-    - Make sure the private_key in secrets is wrapped in quotes
-    - Include the entire key including `-----BEGIN PRIVATE KEY-----` and `-----END PRIVATE KEY-----`
     
     ---
     
